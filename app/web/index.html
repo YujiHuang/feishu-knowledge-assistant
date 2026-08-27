@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识助手</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:#f6f7f9; color:#1c1e21; }
+  .wrap { max-width:820px; margin:0 auto; padding:24px 16px 120px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px;
+           flex-wrap:wrap; margin-bottom:20px; }
+  h1 { font-size:20px; margin:0; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pill { font-size:12px; padding:4px 10px; border-radius:999px; background:#e8eaee; }
+  .pill.ok { background:#d9f2e3; color:#116639; }
+  .pill.warn { background:#fdecd2; color:#8a5300; }
+  button { border:0; border-radius:8px; padding:8px 14px; font-size:14px; cursor:pointer;
+           background:#2b5fd9; color:#fff; }
+  button.secondary { background:#e8eaee; color:#1c1e21; }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { background:#fff; border:1px solid #e3e5e9; border-radius:12px;
+         padding:14px 16px; margin:12px 0; white-space:pre-wrap; line-height:1.65; }
+  .msg.q { background:#eef3ff; border-color:#d5e1fb; }
+  .srcs { margin-top:10px; padding-top:10px; border-top:1px dashed #d9dbe0; font-size:13px; }
+  .srcs a { color:#2b5fd9; text-decoration:none; }
+  .meta { font-size:12px; color:#8a8f98; margin-top:6px; }
+  form { position:fixed; bottom:0; left:0; right:0; background:#fff;
+         border-top:1px solid #e3e5e9; padding:12px 16px; }
+  .row { max-width:820px; margin:0 auto; display:flex; gap:8px; }
+  input[type=text] { flex:1; border:1px solid #cfd3da; border-radius:8px;
+                     padding:10px 12px; font-size:15px; }
+  #syncinfo { font-size:12px; color:#8a8f98; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>知识助手 <span style="font-size:12px;color:#8a8f98">M1</span></h1>
+    <div class="bar">
+      <span id="authpill" class="pill">检查中…</span>
+      <span id="kbpill" class="pill">—</span>
+      <button id="connect" class="secondary" onclick="location.href='/auth/start'">连接飞书</button>
+      <button id="syncbtn" class="secondary" onclick="startSync()">同步知识库</button>
+    </div>
+  </header>
+  <div id="syncinfo"></div>
+  <div id="projbar" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
+  <div class="bar" style="margin:8px 0 4px">
+    <input id="doclink" type="text" placeholder="粘贴共享给你的文档链接（/docx/ 或 /wiki/），立即加入知识库"
+           style="flex:1;border:1px solid #cfd3da;border-radius:8px;padding:8px 10px;font-size:13px">
+    <button class="secondary" onclick="addDoc()">添加</button>
+    <button class="secondary" onclick="toggleDocs()">已收录文档</button>
+  </div>
+  <div id="doclist" style="display:none;background:#fff;border:1px solid #e3e5e9;border-radius:12px;padding:12px 16px;font-size:13px;max-height:320px;overflow:auto"></div>
+  <div id="chat"></div>
+</div>
+<form onsubmit="return ask(event)">
+  <div class="row">
+    <input id="q" type="text" placeholder="问点什么…（回答会附带飞书来源链接）" autocomplete="off">
+    <button id="askbtn" type="submit">提问</button>
+  </div>
+</form>
+<script>
+const $ = id => document.getElementById(id);
+let polling = null;
+let disabledProjects = new Set(JSON.parse(localStorage.getItem('disabledProjects') || '[]'));
+const chatHist = [];   // 本页面会话内的多轮记忆
+
+async function loadProjects() {
+  const ps = await (await fetch('/api/projects')).json();
+  $('projbar').innerHTML = '';
+  ps.forEach(p => {
+    const chip = document.createElement('span');
+    const off = disabledProjects.has(p.name);
+    chip.className = 'pill ' + (off ? '' : 'ok');
+    chip.style.cursor = 'pointer';
+    chip.title = off ? '已关闭，点击开启' : '已开启，点击关闭';
+    chip.textContent = `${off ? '✕' : '✓'} ${p.name} (${p.docs})`;
+    chip.onclick = () => {
+      off ? disabledProjects.delete(p.name) : disabledProjects.add(p.name);
+      localStorage.setItem('disabledProjects', JSON.stringify([...disabledProjects]));
+      loadProjects();
+    };
+    $('projbar').appendChild(chip);
+  });
+}
+
+async function toggleDocs() {
+  const box = $('doclist');
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  const docs = await (await fetch('/api/docs')).json();
+  let cur = null, html = '';
+  docs.forEach(d => {
+    if (d.project !== cur) { cur = d.project; html += `<div style="margin:6px 0 2px"><b>${esc(cur)}</b></div>`; }
+    const t = d.mtime ? new Date(d.mtime*1000).toISOString().slice(0,10) : '';
+    html += `<div>📄 <a href="${d.url}" target="_blank">${esc(d.title||'')}</a> <span style="color:#8a8f98">${t}</span></div>`;
+  });
+  box.innerHTML = html || '（空）';
+  box.style.display = '';
+}
+
+async function refresh() {
+  const s = await (await fetch('/api/status')).json();
+  $('authpill').textContent = s.authorized ? '飞书已连接' : '未连接飞书';
+  $('authpill').className = 'pill ' + (s.authorized ? 'ok' : 'warn');
+  $('kbpill').textContent = `文档 ${s.docs} · 片段 ${s.chunks}`;
+  // 授权后按钮变为「重新授权」（新增权限 scope 后需要重新走一次授权）
+  $('connect').textContent = s.authorized ? '重新授权' : '连接飞书';
+  const p = s.sync;
+  if (p.running) {
+    $('syncbtn').disabled = true;
+    $('syncinfo').textContent = p.phase === 'enumerate'
+      ? '正在枚举可见文档…'
+      : `同步中 ${p.done}/${p.total}：${p.current}`;
+    if (!polling) polling = setInterval(refresh, 2000);
+  } else {
+    $('syncbtn').disabled = false;
+    if (polling) { clearInterval(polling); polling = null; loadProjects(); }
+    $('syncinfo').textContent = p.phase === 'done'
+      ? `同步完成：更新 ${p.done} 篇，移除 ${p.removed} 篇` + (p.errors.length ? `（${p.errors.length} 篇失败）` : '')
+      : (p.phase === 'error' ? '同步出错：' + p.errors.join('; ') : '');
+  }
+}
+
+async function startSync() {
+  await fetch('/api/sync', {method:'POST'});
+  refresh();
+}
+
+async function addDoc() {
+  const url = $('doclink').value.trim();
+  if (!url) return;
+  $('syncinfo').textContent = '正在读取文档…';
+  try {
+    const r = await fetch('/api/add_doc', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({url})});
+    const d = await r.json();
+    $('syncinfo').textContent = (d.ok ? '✅ ' : '⚠️ ') + (d.message || d.error || '');
+    if (d.ok) { $('doclink').value = ''; refresh(); }
+  } catch (e) {
+    $('syncinfo').textContent = '⚠️ 请求失败：' + e;
+  }
+}
+
+function add(cls, html) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.innerHTML = html;
+  $('chat').appendChild(div);
+  div.scrollIntoView({behavior:'smooth'});
+  return div;
+}
+const esc = t => t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// 把附件路径和 URL 变成可点击链接（先 esc 再调用，安全）
+const linkify = t => t
+  .replace(/\/api\/media\/[A-Za-z0-9_\-]+/g, m => `<a href="${m}" target="_blank">📎 打开附件</a>`)
+  .replace(/https?:\/\/[^\s<）)】&]+/g, m => `<a href="${m}" target="_blank">${m}</a>`);
+
+async function ask(e) {
+  e.preventDefault();
+  const q = $('q').value.trim();
+  if (!q) return false;
+  $('q').value = '';
+  add('q', esc(q));
+  const thinking = add('', '检索中…');
+  $('askbtn').disabled = true;
+  try {
+    const enabled = [...document.querySelectorAll('#projbar .pill')]
+      .map(c => c.textContent.replace(/^[✓✕] /,'').replace(/ \(\d+\)$/,''))
+      .filter(name => !disabledProjects.has(name));
+    const body = {question: q};
+    if (disabledProjects.size > 0) body.projects = enabled;
+    if (chatHist.length) body.history = chatHist.slice(-4);
+    const r = await fetch('/api/ask', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)});
+    const d = await r.json();
+    if (d.error) { thinking.innerHTML = '⚠️ ' + esc(d.error); return false; }
+    let html = linkify(esc(d.answer));
+    // 正文引用序号 [n] → 定位链接
+    const refmap = {};
+    (d.sources||[]).forEach(s => (s.refs||[]).forEach(r => refmap[r.n] = r.url));
+    html = html.replace(/\[(\d{1,2})\]/g, (m, n) =>
+      refmap[n] ? `<a href="${refmap[n]}" target="_blank">${m}</a>` : m);
+    if (d.sources.length) {
+      html += '<div class="srcs"><b>来源</b>（点序号定位到原文位置）<br>' + d.sources.map(s => {
+        const nums = (s.refs || []).map(r => `<a href="${r.url}" target="_blank">[${r.n}]</a>`).join('');
+        return `${nums} ${s.kind==='feishu'?'📄':'🌐'} <a href="${s.url}" target="_blank">${esc(s.title)}</a>`;
+      }).join('<br>') + '</div>';
+    }
+    html += `<div class="meta">${d.elapsed}s · 知识库相似度 ${d.top_similarity}` +
+            (d.used_web ? ' · 已联网兜底' : '') + '</div>';
+    thinking.innerHTML = html;
+    chatHist.push({q: q, a: d.answer});
+  } catch (err) {
+    thinking.innerHTML = '⚠️ 请求失败：' + esc(String(err));
+  } finally {
+    $('askbtn').disabled = false;
+  }
+  return false;
+}
+refresh();
+loadProjects();
+</script>
+</body>
+</html>

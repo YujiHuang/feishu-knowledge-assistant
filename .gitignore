@@ -1,0 +1,23 @@
+# 真实配置（含飞书 app_secret、网关地址等），只留在本地
+config.yaml
+
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 本地数据（索引、飞书 token、附件映射）默认在 ~/.knowledge-assistant，
+# 万一有人把 storage.data_dir 指到项目里，这里也兜一下
+.knowledge-assistant/
+lancedb/
+tokens.json
+sync_state.json
+media_map.json
+
+# macOS
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/

@@ -1,0 +1,84 @@
+# 知识助手 M1 配置文件
+# 复制本文件为 config.yaml 并填入真实值：cp config.example.yaml config.yaml
+
+server:
+  host: 127.0.0.1
+  port: 8787          # 注意：飞书后台重定向 URL 必须是 http://127.0.0.1:8787/callback
+
+feishu:
+  app_id: "cli_xxxx"        # 开发者后台「凭证与基础信息」
+  app_secret: ""
+  # M2 需要的权限（在后台「权限管理」开通，改动后需重新授权）：
+  # docx:document:readonly  wiki:wiki:readonly  drive:drive:readonly  offline_access
+  # bitable:app:readonly（多维表格） sheets:spreadsheet:readonly（电子表格）
+  scopes: "docx:document:readonly wiki:wiki:readonly drive:drive:readonly offline_access bitable:app:readonly sheets:spreadsheet:readonly"
+
+llm:
+  # OpenAI 兼容协议的任意网关。base_url 填到 /v1 为止
+  # DeepSeek 官方：https://api.deepseek.com/v1（模型名会换代，跑 tests/check_gateway.py 看当前可用的）
+  # 自建/公司内网网关同理，注意有些网关的模型名带后缀，要填完整名字
+  base_url: "https://api.deepseek.com/v1"
+  # 建议留空，改用环境变量，key 就不会落到磁盘上（zsh 写法，bash 用 -rsp "提示" 变量名）：
+  #   read -rs "DEEPSEEK_API_KEY?API Key: " && export DEEPSEEK_API_KEY && echo
+  # 也认 KA_LLM_API_KEY / OPENAI_API_KEY；环境变量优先级高于本文件
+  api_key: ""
+  model: "deepseek-v4-flash"
+  temperature: 0.2
+
+embedding:
+  provider: "local"                  # local = 本地 bge 模型（推荐）；openai = 走网关的 /embeddings
+  local_model: "BAAI/bge-small-zh-v1.5"
+  # provider 为 openai 时以下生效：
+  base_url: ""
+  api_key: ""
+  model: ""
+
+retrieval:
+  vector_top_k: 12
+  keyword_top_k: 12
+  final_top_k: 8
+  # 追问时带进提示词的历史轮数。每轮都要重发一遍问答，是纯 token 成本；0 = 不带历史
+  history_rounds: 2
+  # 知识库置信度阈值（top1 余弦相似度低于该值时触发联网兜底）
+  web_fallback_threshold: 0.45
+  # 时效加权：最终得分 = 相关度 ×（1 + recency_weight × exp(-文档年龄/半衰期)）
+  recency_weight: 0.5
+  recency_half_life_days: 90
+
+web_search:
+  provider: "tavily"    # 目前支持 tavily；留空 api_key 则禁用联网兜底
+  api_key: ""
+  max_results: 5
+
+sync:
+  include_my_space: false     # 收敛模式：不同步云盘，只同步指定知识库
+  include_wiki: true          # 同步知识库空间
+  # 只同步指定知识库空间。space_id 取自知识库链接 /wiki/space/<这串数字>
+  # 留空 [] = 全部可见空间（不推荐，语料会很杂）
+  wiki_space_allowlist: ["你的知识库 space_id"]
+  # 项目归类规则：知识库内的一级目录名即项目名（顶层散文档归到空间名下）
+  auto_sync_minutes: 60       # 定时自动同步间隔（分钟），0 表示关闭，仅手动
+  exclude_tokens: []          # 排除清单：文档 token / 文件夹 token / wiki 节点 token
+  # 按标题前缀排除（如飞书妙记自动生成的会议记录文档）。已入库的会在下次同步时自动移除
+  exclude_title_prefixes:
+    - "文字记录："
+    - "智能纪要："
+  # 按标题关键词排除（出现在标题任意位置即排除非正式文档）
+  exclude_title_keywords:
+    - "日会"
+    - "周会"
+    - "例会"
+    - "站会"
+    - "晨会"
+    - "双周会"
+  extra_doc_urls: []          # 手动补充的文档链接（枚举不到的「单独分享给你」的文档）
+
+storage:
+  data_dir: "~/.knowledge-assistant"   # tokens、索引、同步状态都存这里
+
+bot:
+  # 飞书机器人（python -m app.bot，需主服务同时运行）
+  name: "知识库助手"          # 只 @ 不带问题时的自我介绍用名
+  # 检索项目白名单：机器人只回答这些项目（一级目录）内的内容，[] 表示全部开放。
+  # 强烈建议只放愿意让同事通过机器人问到的目录——回答本身会外泄内容，链接鉴权防不住。
+  projects: []
